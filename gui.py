@@ -4,31 +4,31 @@ import sys
 from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QMenu, QDockWidget, QListWidget, QInputDialog, QPushButton,
-    QLayout, QVBoxLayout, QHBoxLayout, QWidget, QAbstractItemView, QFileDialog,
+    QVBoxLayout, QHBoxLayout, QWidget, QAbstractItemView, QFileDialog,
     QRadioButton, QListWidgetItem, QDialog, QLabel
 )
 from PySide6.QtCore import (
-    QObject, QRunnable, QThread, QThreadPool, Qt, Signal, Slot
+    QObject, QRunnable, QThreadPool, Qt, Signal
 )
 import pyqtgraph as pg
 import numpy as np
 
 from backend import load_h5mu, compute_tsne, compute_umap
 
-# Define colors as constants
-COLOR_WHITE = (0, 0, 0)   # Black
-COLOR_RED = (255, 0, 0)         # Red
-COLOR_GREEN = (0, 255, 0)       # Green
-COLOR_BLUE = (0, 0, 255)        # Blue
-COLOR_YELLOW = (255, 255, 0)    # Yellow
-COLOR_CYAN = (0, 255, 255)      # Cyan
-COLOR_MAGENTA = (255, 0, 255)   # Magenta
-COLOR_ORANGE = (255, 165, 0)    # Orange
-COLOR_PURPLE = (128, 0, 128)    # Purple
-COLOR_TEAL = (0, 128, 128)      # Teal
+COLOR_DARK_GRAY = (64, 64, 64)
+COLOR_CRIMSON = (220, 20, 60)
+COLOR_LIME_GREEN = (50, 205, 50)
+COLOR_DODGER_BLUE = (30, 144, 255)
+COLOR_GOLD = (255, 215, 0)
+COLOR_TURQUOISE = (64, 224, 208)
+COLOR_AMETHYST = (153, 102, 204)
+COLOR_TOMATO = (255, 99, 71)
+COLOR_SLATE_BLUE = (106, 90, 205)
+COLOR_LIGHT_SEA_GREEN = (32, 178, 170)
+
 PREDEFINED_COLORS = [
-    COLOR_WHITE, COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_YELLOW,
-    COLOR_CYAN, COLOR_MAGENTA, COLOR_ORANGE, COLOR_PURPLE, COLOR_TEAL
+    COLOR_DARK_GRAY, COLOR_CRIMSON, COLOR_LIME_GREEN, COLOR_DODGER_BLUE, COLOR_GOLD,
+    COLOR_TURQUOISE, COLOR_AMETHYST, COLOR_TOMATO, COLOR_SLATE_BLUE, COLOR_LIGHT_SEA_GREEN
 ]
 
 pg.setConfigOption('background', 'w')
@@ -38,6 +38,11 @@ pg.setConfigOption('foreground', 'k')
 class ROIWorkerSignals(QObject):
     finished = Signal()
     result = Signal(list)
+    error = Signal(str)
+
+class DimRedWorkerSignals(QObject):
+    finished = Signal(int)
+    result = Signal(object)
     error = Signal(str)
 
 class ROIWorker(QRunnable):
@@ -61,71 +66,16 @@ class MainAppSignals(QObject):
     selectedPointsUpdated = Signal(list)
 
 class UmapRunnable(QRunnable):
-    def __init__(self, adata, color_map):
+    def __init__(self, adata, window_id, *args, **kwargs):
         super().__init__()
+        self.signals = DimRedWorkerSignals()
         self.adata = adata
-        self.color_map = color_map
-
-        self.dialog = QDialog()
-        self.layout = QVBoxLayout()
-        self.graph_widget = pg.GraphicsLayoutWidget()
-        self.label = QLabel("")
+        self.window_id = window_id
 
     def run(self):
-        # Perform UMAP computation here
-        self.update_progress("UMAP Computation in Progress...")
-
         # Perform UMAP computation
         compute_umap(self.adata)
-
-        # Draw the UMAP scatter plot in the same window
-        self.draw_dimred_scatter(dimred='UMAP')
-
-        # Display "Done computing UMAP" message
-        self.update_progress("Done computing UMAP")
-
-
-
-    def draw_dimred_scatter(self, dimred='t-SNE'):
-        self.layout.addWidget(self.graph_widget)
-        self.cur_dimred_type = dimred
-
-        scatter_plot = pg.ScatterPlotItem(
-            size=6, pen=pg.mkPen(None), brush=pg.mkBrush(0, 0, 0, 20),
-            hoverable=True, hoverSymbol='o', hoverSize=4,
-            hoverBrush=pg.mkBrush('w'), tip=self.scatter_point_tip)
-        if dimred == 't-SNE':
-            scatter_plot.addPoints(
-                x=self.adata.obsm['X_tsne'][:, 0],
-                y=self.adata.obsm['X_tsne'][:, 1],
-                data=self.adata.obs.index,
-                brush=[self.color_map[cell_type] for cell_type in self.adata.obs['Cell_Type_Experimental']]
-            )
-        else:
-            scatter_plot.addPoints(
-                x=self.adata.obsm['X_umap'][:, 0],
-                y=self.adata.obsm['X_umap'][:, 1],
-                data=self.adata.obs.index,
-                brush=[self.color_map[cell_type] for cell_type in self.adata.obs['Cell_Type_Experimental']]
-            )
-
-        # Add the scatter plot to the layout
-        self.current_plot = self.graph_widget.addPlot()
-        self.current_plot.addItem(scatter_plot)
-            
-
-    def scatter_point_tip(self, x, y, data):
-        return f'Cell {data}'
-
-    def update_progress(self, message):
-        self.label.setText(message)
-        QApplication.processEvents()
-
-        if not self.dialog.isVisible():
-            self.layout.addWidget(self.label)
-            self.dialog.setLayout(self.layout)
-            self.dialog.setWindowTitle("UMAP Progress")
-            self.dialog.show()
+        self.signals.finished.emit(self.window_id)
 
 
 class TsneRunnable(QRunnable):
@@ -182,11 +132,13 @@ class MainWindow(QMainWindow):
         
         # Common app related
         #----------------------------------------------------------------------------------------        
-        self.threadpool = QThreadPool()
-        self.selected_file = None
-        self.dataset = {}
+        self.threadpool      = QThreadPool()
+        self.selected_file   = None
+        self.dataset         = {}
+        self.labels_dict     = {}
+        self.pop_out_window_counter = 0
+        self.pop_out_windows = []
         self.signals = MainAppSignals()
-        self.labels_dict = {}
         self.dimred_buttons_added = False
         self.setWindowTitle('tSNE/UMAP visualizer')
 
@@ -196,7 +148,6 @@ class MainWindow(QMainWindow):
         self.dock_container = QWidget()
         self.dock_layout = QVBoxLayout()
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
-
         self.dock_container.setLayout(self.dock_layout)
         self.dock_widget.setWidget(self.dock_container)
 
@@ -221,7 +172,7 @@ class MainWindow(QMainWindow):
         self.info_list_widget.setSelectionMode(
             QAbstractItemView.ExtendedSelection)
         self.info_list_widget.setFixedSize(200, 200)
-        #self.info_list_widget.setStyleSheet("background-color: darkgray;")
+        self.info_list_widget.setStyleSheet("background-color: white;")
         self.info_list_widget.itemSelectionChanged.connect(self.enable_dimred_buttons)
         self.info_list_widget.itemSelectionChanged.connect(self.handleInfoListSelection)
         self.info_section_layout.addWidget(self.info_list_widget)
@@ -396,11 +347,42 @@ class MainWindow(QMainWindow):
             if cell_type in self.labels_dict:
                 selected_indices.extend(self.labels_dict[cell_type])
 
-        runnable = UmapRunnable(
-            self.dataset['rna'][selected_indices].copy(),
-            self.color_map
-        )
+        data_subset = self.dataset['rna'][selected_indices].copy()
+        runnable = UmapRunnable(data_subset, self.pop_out_window_counter)
+        runnable.signals.finished.connect(self.plot_umap_window)
         self.threadpool.start(runnable)
+        self.pop_out_window_counter += 1
+        self.open_plot_window(data_subset)
+
+    def open_plot_window(self, data_subset):
+        dialog = QDialog(self)
+        dialog.resize(400, 300)
+        layout = QVBoxLayout()
+        label = QLabel("Computing UMAP...")
+        layout.addWidget(label)
+        # Add code here to create the UMAP plot using self.updated_adata
+        dialog.setLayout(layout)
+        self.pop_out_windows.append((dialog, data_subset))
+        dialog.show()
+
+    def plot_umap_window(self, window_id):
+        '''
+        '''
+        graph = pg.GraphicsLayoutWidget()
+        scatter_plot = pg.ScatterPlotItem(
+            size = 6, pen = pg.mkPen(None), brush = pg.mkBrush(0, 0, 0, 20),
+            hoverable=True, hoverSymbol='o', hoverSize=4,
+            hoverBrush=pg.mkBrush('w'), tip = self.scatter_point_tip
+        )
+        scatter_plot.addPoints(
+            x = self.pop_out_windows[window_id][1].obsm['X_umap'][:,0],
+            y = self.pop_out_windows[window_id][1].obsm['X_umap'][:,1],
+            data = self.pop_out_windows[window_id][1].obs.index,
+            brush=[self.color_map[cell_type] for cell_type in self.pop_out_windows[window_id][1].obs['Cell_Type_Experimental']]
+        )
+        plt = graph.addPlot()
+        plt.addItem(scatter_plot)
+        self.pop_out_windows[window_id][0].layout().addWidget(graph)
 
     def compute_tsne(self):
         # This function will be called when the Compute t-SNE button is clicked
