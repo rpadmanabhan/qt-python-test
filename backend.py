@@ -19,3 +19,4 @@ def compute_umap(adata):
 def compute_tsne(adata):
     '''
     '''
+    pass
